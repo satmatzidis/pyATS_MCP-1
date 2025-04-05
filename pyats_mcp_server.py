@@ -13,6 +13,8 @@ from genie.libs.parser.utils import get_parser
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, ValidationError
 from typing import List, Dict, Any, Optional
+import asyncio
+from functools import partial
 
 # --- Basic Logging Setup ---
 # Add thread name to logging format
@@ -246,27 +248,27 @@ def run_ping_command(params: dict) -> dict:
 # --- Tool Definitions ---
 
 AVAILABLE_TOOLS = {
-    "run_show_command": {
+    "pyATS_run_show_command": {
         "function": run_show_command,
         "description": "Executes a general Cisco IOS/NX-OS 'show' command (e.g., 'show ip interface brief', 'show version', 'show inventory') on a specified device to gather its current operational state or specific information. Returns parsed JSON output when available, otherwise returns raw text output. Use this for general device information gathering. Requires 'device_name' and the exact 'command' string.",
         "input_model": DeviceCommandInput
     },
-    "apply_configuration": {
+    "pyATS_configure_device": {
         "function": apply_device_configuration,
         "description": "Applies configuration commands to a specified Cisco IOS/NX-OS device. Enters configuration mode and executes the provided commands to modify the device's settings. Use this for making changes to the device configuration. Requires 'device_name' and the 'config_commands' (can be multi-line).",
         "input_model": ConfigInput
     },
-    "learn_config": {
+    "pyATS_show_running_config": {
         "function": execute_learn_config,
          "description": "Retrieves the full running configuration from a Cisco IOS/NX-OS device using 'show running-config'. Returns raw text output as there is no parser available. Requires 'device_name'.",
         "input_model": DeviceOnlyInput
     },
-    "learn_logging": {
+    "pyATS_show_logging": {
         "function": execute_learn_logging,
         "description": "Retrieves recent system logs using 'show logging last 250' on a Cisco IOS/NX-OS device. Returns raw text output. Requires 'device_name'.",
         "input_model": DeviceOnlyInput
     },
-    "run_ping_command": {
+    "pyATS_ping_from_network_device": {
         "function": run_ping_command,
         "description": "Executes a 'ping' command on a specified Cisco IOS/NX-OS device to test network reachability to a target IP address or hostname (e.g., 'ping 8.8.8.8', 'ping vrf MGMT 10.0.0.1'). Returns parsed JSON output for standard pings when possible, otherwise raw text. Requires 'device_name' and the exact 'command' string.",
         "input_model": DeviceCommandInput
@@ -276,43 +278,41 @@ AVAILABLE_TOOLS = {
 # --- JSON-RPC Handling ---
 
 def discover_tools() -> List[Dict[str, Any]]:
-    """Generates the tool discovery list."""
     tools_list = []
     for name, tool_info in AVAILABLE_TOOLS.items():
         tools_list.append({
             "name": name,
             "description": tool_info["description"],
-            "inputSchema": tool_info["input_model"].schema() # Use schema() for JSON schema
+            "inputSchema": tool_info["input_model"].schema()
         })
     return tools_list
 
+# Synchronous tool calling (unchanged, used in thread executor)
 def call_tool(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Calls the specified tool with validation. Returns only the result/error content."""
     if tool_name not in AVAILABLE_TOOLS:
         logger.warning(f"Requested tool '{tool_name}' not found.")
         return {"error": {"code": -32601, "message": f"Method not found: {tool_name}"}}
 
     tool_info = AVAILABLE_TOOLS[tool_name]
     func = tool_info["function"]
-    # Pydantic model validation happens inside the tool function now for better error context
 
     try:
-        # Call the actual function - it now handles validation and returns the result dict
         result_data = func(arguments)
-        # Ensure result is serializable
         json.dumps(result_data)
-        return result_data # Return the direct result from the tool function
+        return result_data
     except Exception as e:
-        # This catches unexpected errors *outside* the tool function's try/except
         logger.error(f"Unexpected error calling tool '{tool_name}': {e}", exc_info=True)
         return {"error": {"code": -32603, "message": f"Internal server error during tool call: {e}"}}
 
+# Async-safe wrapper
+def call_tool_async(tool_name: str, arguments: Dict[str, Any]) -> asyncio.Future:
+    loop = asyncio.get_event_loop()
+    return loop.run_in_executor(None, partial(call_tool, tool_name, arguments))
 
-def process_request(request_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Processes a single JSON-RPC request and returns the full JSON-RPC response."""
-    request_id = request_data.get("id") # Keep the original ID
+# --- Async version of request handler ---
+async def process_request(request_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    request_id = request_data.get("id")
 
-    # Basic JSON-RPC validation
     if not isinstance(request_data, dict) or \
        request_data.get("jsonrpc") != "2.0" or \
        "method" not in request_data:
@@ -325,74 +325,61 @@ def process_request(request_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     response_content = None
     error_content = None
 
-    logger.debug(f"Processing method: {method}") # Debug log
+    logger.debug(f"Processing method: {method}")
 
-    # --- Handle Specific Methods ---
     if method == "tools/discover":
         response_content = discover_tools()
     elif method == "tools/call":
         tool_name = params.get("name")
         arguments = params.get("arguments", {})
         if not tool_name or not isinstance(arguments, dict):
-             logger.warning(f"Invalid params for tools/call: {params}")
-             error_content = {"code": -32602, "message": "Invalid params for tools/call (missing 'name' or 'arguments')"}
+            logger.warning(f"Invalid params for tools/call: {params}")
+            error_content = {"code": -32602, "message": "Invalid params for tools/call (missing 'name' or 'arguments')"}
         else:
-             logger.info(f"Calling tool '{tool_name}' with args: {arguments}")
-             # call_tool now returns the direct result or an error dict
-             result_or_error = call_tool(tool_name, arguments)
-             if "error" in result_or_error:
-                 # If call_tool returned an error structure, use it
-                 error_content = result_or_error["error"]
-             else:
-                 # Otherwise, the result is the success content
-                 response_content = result_or_error
+            logger.info(f"Calling tool '{tool_name}' with args: {arguments}")
+            result_or_error = await call_tool_async(tool_name, arguments)
+            if "error" in result_or_error:
+                error_content = result_or_error["error"]
+            else:
+                response_content = result_or_error
     else:
-         logger.warning(f"Method not found: {method}")
-         error_content = {"code": -32601, "message": f"Method not found: {method}"}
+        logger.warning(f"Method not found: {method}")
+        error_content = {"code": -32601, "message": f"Method not found: {method}"}
 
-    # --- Construct Final JSON-RPC Response ---
     if error_content:
         return {"jsonrpc": "2.0", "error": error_content, "id": request_id}
-    elif response_content is not None: # Check specifically for None in case result is empty list/dict but valid
-         return {"jsonrpc": "2.0", "result": response_content, "id": request_id}
+    elif response_content is not None:
+        return {"jsonrpc": "2.0", "result": response_content, "id": request_id}
     else:
-         # Should not happen if logic is correct, but as a fallback
-         logger.error(f"Request processed but resulted in no response or error content for method {method}")
-         return {"jsonrpc": "2.0", "error": {"code": -32603, "message": "Internal error: Failed to generate response"}, "id": request_id}
-
-
+        logger.error(f"Request processed but resulted in no response or error content for method {method}")
+        return {"jsonrpc": "2.0", "error": {"code": -32603, "message": "Internal error: Failed to generate response"}, "id": request_id}
+    
 # --- Stdio Server Functions ---
 
 def send_response(response_data: Dict[str, Any]):
-    """Safely converts to JSON and writes response to stdout."""
     try:
         response_string = json.dumps(response_data) + "\n"
         sys.stdout.write(response_string)
         sys.stdout.flush()
         logger.debug(f"Sent response: {response_string.strip()}")
     except (TypeError, OverflowError) as e:
-        # Handle cases where the response_data is not JSON serializable
         logger.error(f"Failed to serialize response data: {e}", exc_info=True)
-        # Send a valid JSON-RPC error response back
         error_response = {
             "jsonrpc": "2.0",
             "error": {"code": -32603, "message": f"Internal error: Could not serialize response - {e}"},
-            "id": response_data.get("id") # Try to preserve ID if possible
+            "id": response_data.get("id")
         }
         sys.stdout.write(json.dumps(error_response) + "\n")
         sys.stdout.flush()
     except Exception as e:
         logger.error(f"Failed to write response to stdout: {e}", exc_info=True)
 
-
 def monitor_stdin():
-    """Runs in a thread, continuously reading stdin and processing requests."""
     logger.info("Stdin monitoring thread started.")
     while True:
         try:
             line = sys.stdin.readline()
             if not line:
-                # End of stream or stdin closed. Don't exit.
                 logger.warning("Stdin closed or empty line received. Keeping monitor thread alive.")
                 time.sleep(1)
                 continue
@@ -405,7 +392,7 @@ def monitor_stdin():
             logger.debug(f"Received line: {line}")
             try:
                 request_data = json.loads(line)
-                response = process_request(request_data)
+                response = asyncio.run(process_request(request_data))
                 if response:
                     send_response(response)
                 else:
@@ -418,7 +405,6 @@ def monitor_stdin():
                     "error": {"code": -32700, "message": f"Parse error: {e}"},
                     "id": None
                 })
-
             except Exception as e:
                 logger.error(f"Error processing request: {e}", exc_info=True)
                 send_response({
@@ -426,14 +412,12 @@ def monitor_stdin():
                     "error": {"code": -32603, "message": f"Internal server error: {e}"},
                     "id": None
                 })
-
         except Exception as e:
             logger.error(f"Exception in monitor_stdin loop: {e}", exc_info=True)
             time.sleep(0.1)
+        logger.info("Stdin monitoring thread finished.")
 
-        logger.info("Stdin monitoring thread finished.")  # (Optional, will now never hit this)
-
-def run_server_oneshot():
+async def run_server_oneshot():
     """Reads one JSON request from stdin and writes one JSON response to stdout."""
     logger.info("Starting pyATS MCP Server in one-shot mode...")
     response_sent = False
@@ -444,31 +428,44 @@ def run_server_oneshot():
         last_json_line = None
         for line in reversed(input_data.strip().splitlines()):
             if line.strip().startswith('{') and line.strip().endswith('}'):
-                 last_json_line = line.strip()
-                 break
+                last_json_line = line.strip()
+                break
 
         if not last_json_line:
-             logger.error("No valid JSON object found in input.")
-             send_response({"jsonrpc": "2.0", "error": {"code": -32700, "message": "Parse error: No valid JSON found"}, "id": None})
-             response_sent = True
-             return
+            logger.error("No valid JSON object found in input.")
+            send_response({
+                "jsonrpc": "2.0",
+                "error": {"code": -32700, "message": "Parse error: No valid JSON found"},
+                "id": None
+            })
+            response_sent = True
+            return
 
         logger.info(f"Processing JSON: {last_json_line}")
         request_json = json.loads(last_json_line)
-        response = process_request(request_json)
+        response = await process_request(request_json)
         if response:
             send_response(response)
             response_sent = True
 
     except json.JSONDecodeError as e:
         logger.error(f"JSON Decode Error (oneshot): {e}")
-        if not response_sent: send_response({"jsonrpc": "2.0", "error": {"code": -32700, "message": f"Parse error: {e}"}, "id": None})
+        if not response_sent:
+            send_response({
+                "jsonrpc": "2.0",
+                "error": {"code": -32700, "message": f"Parse error: {e}"},
+                "id": None
+            })
     except Exception as e:
         logger.error(f"Unhandled Server Error (oneshot): {e}", exc_info=True)
-        if not response_sent: send_response({"jsonrpc": "2.0", "error": {"code": -32000, "message": f"Server error: {e}"}, "id": None})
+        if not response_sent:
+            send_response({
+                "jsonrpc": "2.0",
+                "error": {"code": -32000, "message": f"Server error: {e}"},
+                "id": None
+            })
     finally:
         logger.info("pyATS MCP Server one-shot finished.")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="pyATS MCP Server - Runs continuously via stdio by default.")
@@ -476,21 +473,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.oneshot:
-        run_server_oneshot()
+        asyncio.run(run_server_oneshot())  # 🔧 <-- this line changed
     else:
-        # Default: Run continuously using stdin/stdout monitoring thread
         logger.info("Starting pyATS MCP Server in continuous stdio mode...")
         stdin_thread = threading.Thread(target=monitor_stdin, name="StdinMonitorThread", daemon=True)
         stdin_thread.start()
 
         try:
-            # Keep the main thread alive until interrupted
             while stdin_thread.is_alive():
-                time.sleep(0.5) # Check periodically
+                time.sleep(0.5)
         except KeyboardInterrupt:
             logger.info("KeyboardInterrupt received. Shutting down...")
         except Exception as e:
             logger.error(f"Unexpected error in main thread: {e}", exc_info=True)
         finally:
-             logger.info("Main thread exiting.")
-             # The daemon thread will exit automatically when the main thread ends.
+            logger.info("Main thread exiting.")
