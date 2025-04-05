@@ -43,6 +43,10 @@ class ConfigInput(BaseModel):
 class DeviceOnlyInput(BaseModel):
      device_name: str = Field(..., description="The name of the device in the testbed.")
 
+class LinuxCommandInput(BaseModel):
+    device_name: str = Field(..., description="The name of the Linux device in the testbed.")
+    command: str = Field(..., description="Linux command to execute (e.g., 'ifconfig', 'ls -l /home')")
+
 # --- Core pyATS Functions (Keep as is) ---
 # _get_device, _disconnect_device, run_show_command, apply_device_configuration,
 # execute_learn_config, execute_learn_logging, run_ping_command
@@ -245,6 +249,66 @@ def run_ping_command(params: dict) -> dict:
     finally:
         _disconnect_device(device)
 
+SUPPORTED_LINUX_COMMANDS = [
+    "ifconfig",
+    "ifconfig {interface}",
+    "ip route show table all",
+    "ls -l",
+    "ls -l {directory}",
+    "netstat -rn",
+    "ps -ef",
+    "ps -ef | grep {grep}",
+    "route",
+    "route {flag}"
+]
+
+def run_linux_command(command: str, device_name: str):
+    try:
+        logger.info("Loading testbed...")
+        testbed = loader.load(TESTBED_PATH)
+
+        if device_name not in testbed.devices:
+            return {"status": "error", "error": f"Device '{device_name}' not found in testbed."}
+
+        device = testbed.devices[device_name]
+
+        if not device.is_connected():
+            logger.info(f"Connecting to {device_name} via SSH...")
+            device.connect()
+
+        if ">" in command or "|" in command:
+            logger.info(f"Detected redirection or pipe in command: {command}")
+            command = f'sh -c "{command}"'
+
+        try:
+            parser = get_parser(command, device)
+            if parser:
+                logger.info(f"Parsing output for command: {command}")
+                output = device.parse(command)
+            else:
+                raise ValueError("No parser available")
+        except Exception as e:
+            logger.warning(f"No parser found for command: {command}. Using `execute` instead. Error: {e}")
+            output = device.execute(command)
+
+        logger.info(f"Disconnecting from {device_name}...")
+        device.disconnect()
+
+        return {"status": "completed", "device": device_name, "output": output}
+
+    except Exception as e:
+        logger.error(f"Error executing command on {device_name}: {str(e)}")
+        return {"status": "error", "error": str(e)}
+
+
+def run_linux_command_tool(params: dict) -> dict:
+    try:
+        validated = LinuxCommandInput(**params)
+        return run_linux_command(validated.command, validated.device_name)
+    except ValidationError as ve:
+        logger.warning(f"Input validation failed for run_linux_command_tool: {ve}")
+        return {"status": "error", "error": f"Invalid input: {ve}"}
+
 # --- Tool Definitions ---
 
 AVAILABLE_TOOLS = {
@@ -272,7 +336,12 @@ AVAILABLE_TOOLS = {
         "function": run_ping_command,
         "description": "Executes a 'ping' command on a specified Cisco IOS/NX-OS device to test network reachability to a target IP address or hostname (e.g., 'ping 8.8.8.8', 'ping vrf MGMT 10.0.0.1'). Returns parsed JSON output for standard pings when possible, otherwise raw text. Requires 'device_name' and the exact 'command' string.",
         "input_model": DeviceCommandInput
-    }
+    },
+    "pyATS_run_linux_command": {
+        "function": run_linux_command_tool,
+        "description": "Executes common Linux commands on a specified device (e.g., 'ifconfig', 'ps -ef', 'netstat -rn', including piping and redirection). Parsed output is returned when available, otherwise raw output.",
+        "input_model": LinuxCommandInput
+    },
 }
 
 # --- JSON-RPC Handling ---
