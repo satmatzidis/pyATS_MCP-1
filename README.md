@@ -156,6 +156,53 @@ Gracefully handles parsing fallbacks and errors
 
 ```
 
+📥 MCP Server Config Example (pyATS MCP via Docker)
+
+To run the pyATS MCP Server as a container with STDIO integration, configure your mcpServers like this:
+
+``` json
+{
+  "mcpServers": {
+    "pyats": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "PYATS_TESTBED_PATH",
+        "-v",
+        "/absolute/path/to/testbed/folder:/app",
+        "pyats-mcp-server"
+      ],
+      "env": {
+        "PYATS_TESTBED_PATH": "/app/testbed.yaml"
+      }
+    }
+  }
+}
+
+```
+🧾 Explanation:
+command: Uses Docker to launch the containerized pyATS MCP server
+
+args:
+
+-i: Keeps STDIN open for communication
+
+--rm: Automatically removes the container after execution
+
+-e: Injects the environment variable PYATS_TESTBED_PATH
+
+-v: Mounts your local testbed directory into the container
+
+pyats-mcp-server: Name of the Docker image
+
+env:
+
+Sets the path to the testbed file inside the container (/app/testbed.yaml)
+
+
 ✍️ Author
 
 John Capobianco
