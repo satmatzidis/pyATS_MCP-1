@@ -1,6 +1,8 @@
 # pyats_mcp_server.py
 
 import os
+import re
+import string
 import sys
 import json
 import logging
@@ -164,6 +166,7 @@ def execute_learn_config(params: dict) -> dict:
     except ValidationError as ve:
         logger.warning(f"Input validation failed for execute_learn_config: {ve}")
         return {"status": "error", "error": f"Invalid input: {ve}"}
+
     device = None
     try:
         device = _get_device(validated_input.device_name)
@@ -171,13 +174,17 @@ def execute_learn_config(params: dict) -> dict:
 
         device.enable()
         raw_output = device.execute("show run brief")
+
+        # Clean the raw_output
+        cleaned_output = clean_output(raw_output)
+
         logger.info(f"Successfully learned config from {validated_input.device_name}")
 
         return {
             "status": "completed_raw",
             "device": validated_input.device_name,
             "output": {
-                "raw_output": raw_output
+                "raw_output": cleaned_output
             }
         }
 
@@ -186,6 +193,16 @@ def execute_learn_config(params: dict) -> dict:
         return {"status": "error", "error": f"Error learning config: {e}"}
     finally:
         _disconnect_device(device)
+
+def clean_output(output: str) -> str:
+    # Remove ANSI escape sequences
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    output = ansi_escape.sub('', output)
+
+    # Remove non-printable control characters
+    output = ''.join(char for char in output if char in string.printable)
+
+    return output
 
 
 def execute_learn_logging(params: dict) -> dict:
