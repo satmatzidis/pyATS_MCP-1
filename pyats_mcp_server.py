@@ -368,15 +368,32 @@ logger.info(f"🚀 Registered {len(AVAILABLE_TOOLS)} tools at startup: {list(AVA
 def discover_tools() -> List[Dict[str, Any]]:
     logger.info(f"🛠 discover_tools(): AVAILABLE_TOOLS keys: {list(AVAILABLE_TOOLS.keys())}")
     tools_list = []
+
     for name, tool_info in AVAILABLE_TOOLS.items():
-        schema = tool_info["input_model"].model_json_schema()
-        logger.debug(f"📦 Tool '{name}' schema:\n{json.dumps(schema, indent=2)}")
+        raw_schema = tool_info["input_model"].model_json_schema()
+
+        cleaned_properties = {
+            k: {k2: v2 for k2, v2 in v.items() if k2 != "title"}
+            for k, v in raw_schema.get("properties", {}).items()
+        }
+
+        input_schema = {
+            "type": "object",
+            "properties": cleaned_properties,
+            "required": raw_schema.get("required", []),
+            "additionalProperties": False
+        }
+
         tools_list.append({
             "name": name,
             "description": tool_info["description"],
-            "inputSchema": schema
+            "parameters": input_schema
         })
+
     logger.info(f"✅ discover_tools() returning {len(tools_list)} tools")
+    logger.info("🔍 Full tool dump for verification:")
+    for tool in tools_list:
+        logger.info(json.dumps(tool, indent=2))
     return tools_list
 
 # Synchronous tool calling (unchanged, used in thread executor)
@@ -449,7 +466,12 @@ async def process_request(request_data: Dict[str, Any]) -> Optional[Dict[str, An
 
     if method in ("tools/discover", "tools/list"):
         logger.info(f"⚙️ {method} → Discovering tools...")
-        response_content = discover_tools()
+        tools = discover_tools()
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "result": tools
+        }
 
     elif method == "tools/call":
         tool_name = params.get("name")
