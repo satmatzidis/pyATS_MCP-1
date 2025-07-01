@@ -329,32 +329,32 @@ def run_linux_command_tool(params: dict) -> dict:
 # --- Tool Definitions ---
 
 AVAILABLE_TOOLS = {
-    "pyATS_run_show_command": {
+    "pyats_run_show_command": {
         "function": run_show_command,
         "description": "Executes a general Cisco IOS/NX-OS 'show' command (e.g., 'show ip interface brief', 'show version', 'show inventory') on a specified device to gather its current operational state or specific information. Returns parsed JSON output when available, otherwise returns raw text output. Use this for general device information gathering. Requires 'device_name' and the exact 'command' string.",
         "input_model": DeviceCommandInput
     },
-    "pyATS_configure_device": {
+    "pyats_configure_device": {
         "function": apply_device_configuration,
         "description": "Applies configuration commands to a specified Cisco IOS/NX-OS device. Enters configuration mode and executes the provided commands to modify the device's settings. Use this for making changes to the device configuration. Requires 'device_name' and the 'config_commands' (can be multi-line).",
         "input_model": ConfigInput
     },
-    "pyATS_show_running_config": {
+    "pyats_show_running_config": {
         "function": execute_learn_config,
          "description": "Retrieves the full running configuration from a Cisco IOS/NX-OS device using 'show running-config'. Returns raw text output as there is no parser available. Requires 'device_name'.",
         "input_model": DeviceOnlyInput
     },
-    "pyATS_show_logging": {
+    "pyats_show_logging": {
         "function": execute_learn_logging,
         "description": "Retrieves recent system logs using 'show logging last 250' on a Cisco IOS/NX-OS device. Returns raw text output. Requires 'device_name'.",
         "input_model": DeviceOnlyInput
     },
-    "pyATS_ping_from_network_device": {
+    "pyats_ping_from_network_device": {
         "function": run_ping_command,
         "description": "Executes a 'ping' command on a specified Cisco IOS/NX-OS device to test network reachability to a target IP address or hostname (e.g., 'ping 8.8.8.8', 'ping vrf MGMT 10.0.0.1'). Returns parsed JSON output for standard pings when possible, otherwise raw text. Requires 'device_name' and the exact 'command' string.",
         "input_model": DeviceCommandInput
     },
-    "pyATS_run_linux_command": {
+    "pyats_run_linux_command": {
         "function": run_linux_command_tool,
         "description": "Executes common Linux commands on a specified device (e.g., 'ifconfig', 'ps -ef', 'netstat -rn', including piping and redirection). Parsed output is returned when available, otherwise raw output.",
         "input_model": LinuxCommandInput
