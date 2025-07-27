@@ -1,4 +1,4 @@
 pyats[full]
 mcp
 pydantic
-dotenv
+python-dotenv
