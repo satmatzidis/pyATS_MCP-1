@@ -183,6 +183,23 @@ To run the pyATS MCP Server as a container with STDIO integration, configure you
 }
 
 ```
+
+```json
+{
+  "servers": { 
+    "pyats": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "-u",
+        "/Users/johncapobianco/pyATS_MCP/pyats_mcp_server.py"
+      ],
+      "env": {
+        "PYATS_TESTBED_PATH": "/Users/johncapobianco/pyATS_MCP/testbed.yaml"
+      }
+  }
+}
+```
 🧾 Explanation:
 command: Uses Docker to launch the containerized pyATS MCP server
 
